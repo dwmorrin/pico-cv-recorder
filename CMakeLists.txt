@@ -12,6 +12,11 @@ add_executable(dac
 
 pico_enable_stdio_usb(dac 1)
 
-target_link_libraries(dac pico_stdlib hardware_adc hardware_i2c)
+target_link_libraries(dac
+  pico_stdlib
+  pico_time
+  hardware_adc
+  hardware_i2c
+)
 
 pico_add_extra_outputs(dac)
