@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
+#include "hardware/adc.h"
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
 
@@ -42,17 +43,26 @@ int main() {
   gpio_set_dir(LED_PIN, GPIO_OUT);
   gpio_put(LED_PIN, 1);
 
-  // i2c setup
+  // i2c setup for DAC
   i2c_init(I2C_PORT, 400 * 1e3);
   gpio_set_function(4, GPIO_FUNC_I2C);
   gpio_set_function(5, GPIO_FUNC_I2C);
   gpio_pull_up(4);
   gpio_pull_up(5);
 
+  // ADC setup
+  adc_init();
+  // init GPIO pin for ADC: high impedance, disable all dig functions
+  adc_gpio_init(26); // 26, 27, 28, or 29
+  // select ADC input (matching what was init'd for GPIO)
+  adc_select_input(0);
+
   uint i = 0;
   while (1) {
     printf("writing to DAC: %d\n", i);
     mcp4725_write(i);
+    uint16_t reading = adc_read();
+    printf("reading from ADC: 0x%03x\n", reading);
     sleep_ms(DELAY_MS);
     i = (i + STEP) % DAC_MAX;
   }
