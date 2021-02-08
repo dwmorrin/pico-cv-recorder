@@ -23,40 +23,52 @@
 static int addr = 0x62;
 const uint LED_PIN = 25;
 const uint TRIG_IN_PIN = 16;
+const uint REC_PLAY_PIN = 17;
+#define MEMORY_LENGTH 16
+uint16_t memory[MEMORY_LENGTH] = {0};
+static int memoryIndex = 0;
+static bool recording = true;
 
 static void mcp4725_write(uint value) {
   uint8_t data[] = {0x40, value / 16, (value % 16) << 4};
   i2c_write_blocking(I2C_PORT, addr, data, 3, false);
 }
 
-void onTrigger(void);
+void onTrigger(uint);
 void onEdge(uint, uint32_t);
+void onRecPlayEdge(uint, uint32_t);
 
 // debouncing: edge calls this, checks if button held high, runs trig or resets interrupt
 int64_t checkTrigger(alarm_id_t id, void* user_data) {
-  if (gpio_get(TRIG_IN_PIN)) onTrigger();
+  uint gpio = (uint) user_data;
+  if (gpio_get(gpio)) onTrigger(gpio);
   else 
-    gpio_set_irq_enabled_with_callback(TRIG_IN_PIN, GPIO_IRQ_EDGE_RISE, true, &onEdge);
+    gpio_set_irq_enabled_with_callback(gpio, GPIO_IRQ_EDGE_RISE, true, &onEdge);
   return 0;
 }
 
 // debouncing: edge interrupt calls this, disables interrupt and checks if held high
 void onEdge(uint gpio, uint32_t events) {
-  gpio_set_irq_enabled(TRIG_IN_PIN, GPIO_IRQ_EDGE_RISE, false);
-  add_alarm_in_ms(20, &checkTrigger, 0, true);
+  gpio_set_irq_enabled(gpio, GPIO_IRQ_EDGE_RISE, false);
+  add_alarm_in_ms(20, &checkTrigger, (void*) gpio, true);
 }
 
 // debouncing: this runs post-debounce check
-void onTrigger() {
-  uint i = 1000;
-  // 12-bit conversion, calibrate for V_max
-  const float conversion_factor = 3.3f / (1 << 12);
-  printf("writing to DAC: %d\n", i);
-  mcp4725_write(i);
-  uint16_t reading = adc_read();
-  printf("reading from ADC: 0x%03x, voltage: %f V\n", reading, reading * conversion_factor);
+void onTrigger(uint gpio) {
+  switch (gpio) {
+    case TRIG_IN_PIN:
+      if (recording) memory[memoryIndex] = adc_read();
+      else mcp4725_write(memory[memoryIndex]);
+      printf("%02d: %d\n", memoryIndex, memory[memoryIndex]);
+      memoryIndex = (memoryIndex + 1) % MEMORY_LENGTH;
+      break;
+    case REC_PLAY_PIN:
+      recording = !recording;
+      printf("Mode: %s\n", recording ? "recording" : "playing");
+      break;
+  }
   // turn interrupt back on
-  gpio_set_irq_enabled_with_callback(TRIG_IN_PIN, GPIO_IRQ_EDGE_RISE, true, &onEdge);
+  gpio_set_irq_enabled_with_callback(gpio, GPIO_IRQ_EDGE_RISE, true, &onEdge);
 }
 
 int main() {
@@ -67,8 +79,9 @@ int main() {
   gpio_set_dir(LED_PIN, GPIO_OUT);
   gpio_put(LED_PIN, 1);
 
-  // trigger input
+  // register front panel controls with callbacks
   gpio_set_irq_enabled_with_callback(TRIG_IN_PIN, GPIO_IRQ_EDGE_RISE, true, &onEdge);
+  gpio_set_irq_enabled_with_callback(REC_PLAY_PIN, GPIO_IRQ_EDGE_RISE, true, &onEdge);
 
   // i2c setup for DAC
   i2c_init(I2C_PORT, 400 * 1e3);
