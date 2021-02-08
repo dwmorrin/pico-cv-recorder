@@ -15,8 +15,9 @@
     GND (pin 38)   -> GND (pin 2)
 
   Trigger input:
-    GPIO 16 (pin 21) -> N.O. switch (other side connected to 3.3 V)
-      or other source of high logic voltage
+    GPIO 16 (pin 21) -> N.O. switch to 3.3 V
+  Mode input:
+    GPIO 17 (pin 22) -> N.O. switch to 3.3 V
 */
 
 // default address of MCP4725 DAC
