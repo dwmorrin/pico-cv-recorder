@@ -29,10 +29,27 @@ const uint REC_PLAY_PIN = 17;
 uint16_t memory[MEMORY_LENGTH] = {0};
 static int memoryIndex = 0;
 static bool recording = true;
+static alarm_id_t ledAlarmId = 0;
 
 static void mcp4725_write(uint value) {
   uint8_t data[] = {0x40, value / 16, (value % 16) << 4};
   i2c_write_blocking(I2C_PORT, addr, data, 3, false);
+}
+
+// LED indicates mode: solid for playback, blinking for recording
+int64_t ledOn(alarm_id_t, void*);
+
+int64_t ledOff(alarm_id_t id, void* user_data) {
+  gpio_put(LED_PIN, 0);
+  ledAlarmId = add_alarm_in_ms(250, &ledOn, 0, true);
+  return 0;
+}
+
+int64_t ledOn(alarm_id_t id, void* user_data) {
+  gpio_put(LED_PIN, 1);
+  if (recording)
+    ledAlarmId = add_alarm_in_ms(250, &ledOff, 0, true);
+  return 0;
 }
 
 void onTrigger(uint);
@@ -64,6 +81,10 @@ void onTrigger(uint gpio) {
       break;
     case REC_PLAY_PIN:
       recording = !recording;
+      // reset indicator LED
+      cancel_alarm(ledAlarmId);
+      gpio_put(LED_PIN, 1);
+      if (recording) ledAlarmId = add_alarm_in_ms(250, &ledOff, 0, true);
       printf("Mode: %s\n", recording ? "recording" : "playing");
       break;
   }
@@ -74,11 +95,6 @@ void onTrigger(uint gpio) {
 int main() {
   stdio_init_all();
   
-  // basic indicator LED
-  gpio_init(LED_PIN);
-  gpio_set_dir(LED_PIN, GPIO_OUT);
-  gpio_put(LED_PIN, 1);
-
   // register front panel controls with callbacks
   gpio_set_irq_enabled_with_callback(TRIG_IN_PIN, GPIO_IRQ_EDGE_RISE, true, &onEdge);
   gpio_set_irq_enabled_with_callback(REC_PLAY_PIN, GPIO_IRQ_EDGE_RISE, true, &onEdge);
@@ -96,6 +112,11 @@ int main() {
   adc_gpio_init(26); // 26, 27, 28, or 29
   // select ADC input (matching what was init'd for GPIO)
   adc_select_input(0);
+
+  // basic indicator LED
+  gpio_init(LED_PIN);
+  gpio_set_dir(LED_PIN, GPIO_OUT);
+  ledOn(0, 0); // starts blinking to indicate record mode
 
   while (1);
 }
