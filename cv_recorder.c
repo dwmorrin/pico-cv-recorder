@@ -37,7 +37,6 @@ static void mcp4725_write(uint value) {
 
 void onTrigger(uint);
 void onEdge(uint, uint32_t);
-void onRecPlayEdge(uint, uint32_t);
 
 // debouncing: edge calls this, checks if button held high, runs trig or resets interrupt
 int64_t checkTrigger(alarm_id_t id, void* user_data) {
