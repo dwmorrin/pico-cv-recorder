@@ -14,17 +14,26 @@
     3.3 V (pin 36) -> VDD (pin 1)
     GND (pin 38)   -> GND (pin 2)
 
-  Trigger input:
+  Trigger button:
     GPIO 16 (pin 21) -> N.O. switch to 3.3 V
-  Mode input:
+  Trigger input (high pulse):
+    GPIO 18 (pin 24)
+  Mode button:
     GPIO 17 (pin 22) -> N.O. switch to 3.3 V
+  Mode input (high pulse):
+    GPIO 19 (pin 25)
 */
+
+// button debounce time in milliseconds
+const uint DEBOUNCE_MS = 20;
 
 // default address of MCP4725 DAC
 static int addr = 0x62;
 const uint LED_PIN = 25;
-const uint TRIG_IN_PIN = 16;
-const uint REC_PLAY_PIN = 17;
+const uint TRIG_BUTTON_PIN = 16;
+const uint MODE_BUTTON_PIN = 17;
+const uint TRIG_PULSE_PIN = 18;
+const uint MODE_PULSE_PIN = 19;
 #define MEMORY_LENGTH 16
 uint16_t memory[MEMORY_LENGTH] = {0};
 static int memoryIndex = 0;
@@ -55,49 +64,72 @@ int64_t ledOn(alarm_id_t id, void* user_data) {
 void onTrigger(uint);
 void onEdge(uint, uint32_t);
 
+void enableInput(uint pin) {
+  gpio_set_irq_enabled_with_callback(pin, GPIO_IRQ_EDGE_RISE, true, &onEdge);
+}
+
+void disableInput(uint pin) {
+  gpio_set_irq_enabled(pin, GPIO_IRQ_EDGE_RISE, false);
+}
+
 // debouncing: edge calls this, checks if button held high, runs trig or resets interrupt
 int64_t checkTrigger(alarm_id_t id, void* user_data) {
   uint gpio = (uint) user_data;
   if (gpio_get(gpio)) onTrigger(gpio);
   else 
-    gpio_set_irq_enabled_with_callback(gpio, GPIO_IRQ_EDGE_RISE, true, &onEdge);
+    enableInput(gpio);
   return 0;
 }
 
-// debouncing: edge interrupt calls this, disables interrupt and checks if held high
+// debouncing: immediately react for pulse inputs, debounce manually pressed buttons
 void onEdge(uint gpio, uint32_t events) {
-  gpio_set_irq_enabled(gpio, GPIO_IRQ_EDGE_RISE, false);
-  add_alarm_in_ms(20, &checkTrigger, (void*) gpio, true);
+  switch (gpio) {
+    case TRIG_PULSE_PIN:
+    case MODE_PULSE_PIN:
+      // no debounce
+      onTrigger(gpio);
+      break;
+    case TRIG_BUTTON_PIN:
+    case MODE_BUTTON_PIN:
+      // software debounce
+      disableInput(gpio);
+      add_alarm_in_ms(DEBOUNCE_MS, &checkTrigger, (void*) gpio, true);
+      break;
+  }
 }
 
 // debouncing: this runs post-debounce check
 void onTrigger(uint gpio) {
   switch (gpio) {
-    case TRIG_IN_PIN:
+    case TRIG_BUTTON_PIN:
+    case TRIG_PULSE_PIN:
       if (recording) memory[memoryIndex] = adc_read();
       else mcp4725_write(memory[memoryIndex]);
       printf("%02d: %d\n", memoryIndex, memory[memoryIndex]);
       memoryIndex = (memoryIndex + 1) % MEMORY_LENGTH;
+      if (gpio == TRIG_BUTTON_PIN) enableInput(gpio);
       break;
-    case REC_PLAY_PIN:
+    case MODE_BUTTON_PIN:
+    case MODE_PULSE_PIN:
       recording = !recording;
       // reset indicator LED
       cancel_alarm(ledAlarmId);
       gpio_put(LED_PIN, 1);
       if (recording) ledAlarmId = add_alarm_in_ms(250, &ledOff, 0, true);
       printf("Mode: %s\n", recording ? "recording" : "playing");
+      if (gpio == MODE_BUTTON_PIN) enableInput(gpio);
       break;
   }
-  // turn interrupt back on
-  gpio_set_irq_enabled_with_callback(gpio, GPIO_IRQ_EDGE_RISE, true, &onEdge);
 }
 
 int main() {
   stdio_init_all();
   
   // register front panel controls with callbacks
-  gpio_set_irq_enabled_with_callback(TRIG_IN_PIN, GPIO_IRQ_EDGE_RISE, true, &onEdge);
-  gpio_set_irq_enabled_with_callback(REC_PLAY_PIN, GPIO_IRQ_EDGE_RISE, true, &onEdge);
+  enableInput(TRIG_BUTTON_PIN);
+  enableInput(MODE_BUTTON_PIN);
+  enableInput(TRIG_PULSE_PIN);
+  enableInput(MODE_PULSE_PIN);
 
   // i2c setup for DAC
   i2c_init(I2C_PORT, 400 * 1e3);
