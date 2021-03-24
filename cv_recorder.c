@@ -24,44 +24,77 @@
     GPIO 19 (pin 25)
 */
 
+// tempo constants
+const uint SLOW_MS = 3e3; // seconds = 1/3 Hz = 20 bpm
+const uint FAST_MS = 142; // milliseconds = 7 Hz = 420 bpm
+const uint TEMPO_READ_DELAY = 100; // milliseconds
+static struct repeating_timer tempoTimer;
+
+// ADC constants
+// pins can be 26-29, inputs are 0-3, respectively
+const uint CV_IN_PIN = 26;
+const uint CV_IN = 0;
+const uint TEMPO_IN_PIN = 27;
+const uint TEMPO_IN= 1;
+
 // button debounce time in milliseconds
 const uint DEBOUNCE_MS = 20;
 
 // default address of MCP4725 DAC
 static int addr = 0x62;
+const uint SDA_PIN = 4;
+const uint SCL_PIN = 5;
+const uint IC2_HZ = 400e3;
+
+// led output
 const uint LED_PIN = 25;
+
+// controls
 const uint TRIG_BUTTON_PIN = 16;
 const uint MODE_BUTTON_PIN = 17;
 const uint TRIG_PULSE_PIN = 18;
 const uint MODE_PULSE_PIN = 19;
+
+// memory
 #define MEMORY_LENGTH 16
 uint16_t memory[MEMORY_LENGTH] = {0};
 static int memoryIndex = 0;
-static bool recording = true;
-static alarm_id_t ledAlarmId = 0;
+
+// global state
+volatile uint tempoDelayMs = 500; // milliseconds; tempo pot updates
+volatile bool triggered = false;
+volatile bool modeToggled = false;
+static bool recording = false;
+static alarm_id_t internalClockAlarmId = 0;
 
 static void mcp4725_write(uint value) {
   uint8_t data[] = {0x40, value / 16, (value % 16) << 4};
   i2c_write_blocking(I2C_PORT, addr, data, 3, false);
 }
 
-// LED indicates mode: solid for playback, blinking for recording
-int64_t ledOn(alarm_id_t, void*);
+void onTrigger();
+int64_t beatTrigger(alarm_id_t, void*);
+
+int64_t beatAnticipate(alarm_id_t id, void* user_data) {
+  gpio_put(LED_PIN, false);
+  internalClockAlarmId = add_alarm_in_ms(tempoDelayMs, &beatTrigger, 0, true);
+  return 0;
+}
+
+int64_t beatTrigger(alarm_id_t id, void* user_data) {
+  onTrigger();
+  gpio_put(LED_PIN, true);
+  if (!recording)
+    internalClockAlarmId = add_alarm_in_ms(tempoDelayMs, &beatAnticipate, 0, true);
+  return 0;
+}
 
 int64_t ledOff(alarm_id_t id, void* user_data) {
-  gpio_put(LED_PIN, 0);
-  ledAlarmId = add_alarm_in_ms(250, &ledOn, 0, true);
+  gpio_put(LED_PIN, false);
   return 0;
 }
 
-int64_t ledOn(alarm_id_t id, void* user_data) {
-  gpio_put(LED_PIN, 1);
-  if (recording)
-    ledAlarmId = add_alarm_in_ms(250, &ledOff, 0, true);
-  return 0;
-}
-
-void onTrigger(uint);
+void onPulse(uint);
 void onEdge(uint, uint32_t);
 
 void enableInput(uint pin) {
@@ -75,7 +108,7 @@ void disableInput(uint pin) {
 // debouncing: edge calls this, checks if button held high, runs trig or resets interrupt
 int64_t checkTrigger(alarm_id_t id, void* user_data) {
   uint gpio = (uint) user_data;
-  if (gpio_get(gpio)) onTrigger(gpio);
+  if (gpio_get(gpio)) onPulse(gpio);
   else 
     enableInput(gpio);
   return 0;
@@ -87,7 +120,7 @@ void onEdge(uint gpio, uint32_t events) {
     case TRIG_PULSE_PIN:
     case MODE_PULSE_PIN:
       // no debounce
-      onTrigger(gpio);
+      onPulse(gpio);
       break;
     case TRIG_BUTTON_PIN:
     case MODE_BUTTON_PIN:
@@ -99,27 +132,55 @@ void onEdge(uint gpio, uint32_t events) {
 }
 
 // debouncing: this runs post-debounce check
-void onTrigger(uint gpio) {
+void onPulse(uint gpio) {
   switch (gpio) {
     case TRIG_BUTTON_PIN:
     case TRIG_PULSE_PIN:
-      if (recording) memory[memoryIndex] = adc_read();
-      else mcp4725_write(memory[memoryIndex]);
-      printf("%02d: %d\n", memoryIndex, memory[memoryIndex]);
-      memoryIndex = (memoryIndex + 1) % MEMORY_LENGTH;
+      triggered = true;
       if (gpio == TRIG_BUTTON_PIN) enableInput(gpio);
       break;
     case MODE_BUTTON_PIN:
     case MODE_PULSE_PIN:
-      recording = !recording;
-      // reset indicator LED
-      cancel_alarm(ledAlarmId);
-      gpio_put(LED_PIN, 1);
-      if (recording) ledAlarmId = add_alarm_in_ms(250, &ledOff, 0, true);
-      printf("Mode: %s\n", recording ? "recording" : "playing");
+      modeToggled = true;
       if (gpio == MODE_BUTTON_PIN) enableInput(gpio);
       break;
   }
+}
+
+void resetInternalClock() {
+  if (internalClockAlarmId) cancel_alarm(internalClockAlarmId);
+  gpio_put(LED_PIN, 0);
+  if (!recording) internalClockAlarmId = add_alarm_in_ms(0, &beatTrigger, 0, true);
+}
+
+// update tempo potentiometer reading; probably not quite right yet with the reset
+bool updateTempoDelay(repeating_timer_t* rt) {
+  adc_select_input(TEMPO_IN);
+  uint16_t tempoRaw = adc_read(); // 0 to 4096
+  // divide desired tempo by two; two delays per beat
+  uint newTempoDelayMs = ((SLOW_MS - FAST_MS) * tempoRaw / 4096 + FAST_MS)/2;
+  if (newTempoDelayMs > tempoDelayMs + 20 || newTempoDelayMs < tempoDelayMs - 20) {
+    tempoDelayMs = newTempoDelayMs;
+  }
+  return true;
+}
+
+void onTrigger() {
+  if (recording) {
+    gpio_put(LED_PIN, true);
+    add_alarm_in_ms(20, &ledOff, 0, true);
+    adc_select_input(CV_IN);
+    memory[memoryIndex] = adc_read();
+  }
+  mcp4725_write(memory[memoryIndex]);
+  memoryIndex = (memoryIndex + 1) % MEMORY_LENGTH;
+  triggered = false;
+}
+
+void onModeToggle() {
+  recording = !recording;
+  resetInternalClock();
+  modeToggled = false;
 }
 
 int main() {
@@ -132,23 +193,26 @@ int main() {
   enableInput(MODE_PULSE_PIN);
 
   // i2c setup for DAC
-  i2c_init(I2C_PORT, 400 * 1e3);
-  gpio_set_function(4, GPIO_FUNC_I2C);
-  gpio_set_function(5, GPIO_FUNC_I2C);
-  gpio_pull_up(4);
-  gpio_pull_up(5);
+  i2c_init(I2C_PORT, IC2_HZ);
+  gpio_set_function(SDA_PIN, GPIO_FUNC_I2C);
+  gpio_set_function(SCL_PIN, GPIO_FUNC_I2C);
+  gpio_pull_up(SDA_PIN);
+  gpio_pull_up(SCL_PIN);
 
   // ADC setup
   adc_init();
-  // init GPIO pin for ADC: high impedance, disable all dig functions
-  adc_gpio_init(26); // 26, 27, 28, or 29
-  // select ADC input (matching what was init'd for GPIO)
-  adc_select_input(0);
+  adc_gpio_init(CV_IN_PIN);
+  adc_gpio_init(TEMPO_IN_PIN);
 
-  // basic indicator LED
+  // tempo indicator LED
   gpio_init(LED_PIN);
   gpio_set_dir(LED_PIN, GPIO_OUT);
-  ledOn(0, 0); // starts blinking to indicate record mode
+  resetInternalClock();
 
-  while (1);
+  add_repeating_timer_ms(TEMPO_READ_DELAY, &updateTempoDelay, 0, &tempoTimer);
+
+  while (true) {
+    if (triggered) onTrigger();
+    if (modeToggled) onModeToggle();
+  };
 }
