@@ -8,7 +8,7 @@
 #define I2C_PORT i2c0
 
 /*
-  Connections from Raspberry Pi Pico to Adafruit MCP4725 DAC breakout:
+  Adafruit MCP4725 DAC breakout:
     GPIO 4 (pin 6) -> SDA (pin 4)
     GPIO 5 (pin 7) -> SCL (pin 3)
     3.3 V (pin 36) -> VDD (pin 1)
@@ -22,6 +22,18 @@
     GPIO 17 (pin 22) -> N.O. switch to 3.3 V
   Mode input (high pulse):
     GPIO 19 (pin 25)
+
+  Tempo control: (using internal timer for playback)
+    Potentiometer:
+      CCW   -> 3.3 V (pin 36) (slowest tempo)
+      WIPER -> GPIO 27 (pin 32) (ADC)
+      CW    -> GND (pin 2) (fastest tempo)
+  
+  Voltage-to-be-sampled input:
+    GPIO 26 (pin 31)
+  
+  Trigger output: (pulse high on playback)
+    GPIO 15 (pin 20)
 */
 
 // tempo constants
@@ -48,6 +60,9 @@ const uint IC2_HZ = 400e3;
 
 // led output
 const uint LED_PIN = 25;
+
+// trigger output
+const uint TRIG_OUT_PIN = 15;
 
 // controls
 const uint TRIG_BUTTON_PIN = 16;
@@ -89,8 +104,9 @@ int64_t beatTrigger(alarm_id_t id, void* user_data) {
   return 0;
 }
 
-int64_t ledOff(alarm_id_t id, void* user_data) {
-  gpio_put(LED_PIN, false);
+int64_t pinOff(alarm_id_t id, void* user_data) {
+  uint pin = (uint)user_data;
+  gpio_put(pin, false);
   return 0;
 }
 
@@ -168,11 +184,13 @@ bool updateTempoDelay(repeating_timer_t* rt) {
 void onTrigger() {
   if (recording) {
     gpio_put(LED_PIN, true);
-    add_alarm_in_ms(20, &ledOff, 0, true);
+    add_alarm_in_ms(20, &pinOff, (void*) LED_PIN, true);
     adc_select_input(CV_IN);
     memory[memoryIndex] = adc_read();
   }
   mcp4725_write(memory[memoryIndex]);
+  gpio_put(TRIG_OUT_PIN, true);
+  add_alarm_in_ms(10, &pinOff, (void*) TRIG_OUT_PIN, true);
   memoryIndex = (memoryIndex + 1) % MEMORY_LENGTH;
   triggered = false;
 }
@@ -203,6 +221,11 @@ int main() {
   adc_init();
   adc_gpio_init(CV_IN_PIN);
   adc_gpio_init(TEMPO_IN_PIN);
+
+  // trigger output
+  gpio_init(TRIG_OUT_PIN);
+  gpio_set_dir(TRIG_OUT_PIN, GPIO_OUT);
+  gpio_put(TRIG_OUT_PIN, false);
 
   // tempo indicator LED
   gpio_init(LED_PIN);
