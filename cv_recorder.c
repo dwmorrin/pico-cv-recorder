@@ -8,6 +8,8 @@
 #define I2C_PORT i2c0
 
 /*
+ **** HARDWARE NOTES ****
+
   Adafruit MCP4725 DAC breakout:
     GPIO 4 (pin 6) -> SDA (pin 4)
     GPIO 5 (pin 7) -> SCL (pin 3)
@@ -34,6 +36,12 @@
   
   Trigger output: (pulse high on playback)
     GPIO 15 (pin 20)
+
+  optional potentiometer addressing:
+    For 8 pot boards, 3 bits for pot address, plus a bit per board
+    (no extra bit if just one board)
+    GPIO 6, 7, 8 (pins 9, 10, 11) -> A0, A1, A2
+    
 */
 
 // tempo constants
@@ -70,6 +78,12 @@ const uint MODE_BUTTON_PIN = 17;
 const uint TRIG_PULSE_PIN = 18;
 const uint MODE_PULSE_PIN = 19;
 
+// pot addressing
+// 3 bits for pot address, plus a bit per board if >1 board
+const uint POT_ADDR_0_PIN = 6;
+const uint POT_ADDR_1_PIN = 7;
+const uint POT_ADDR_2_PIN = 8;
+
 // memory
 #define MEMORY_LENGTH 16
 uint16_t memory[MEMORY_LENGTH] = {0};
@@ -79,6 +93,7 @@ static int memoryIndex = 0;
 volatile uint tempoDelayMs = 500; // milliseconds; tempo pot updates
 volatile bool triggered = false;
 volatile bool modeToggled = false;
+volatile uint8_t pot_addr = 0;
 static bool recording = false;
 static alarm_id_t internalClockAlarmId = 0;
 
@@ -90,9 +105,31 @@ static void mcp4725_write(uint value) {
 void onTrigger();
 int64_t beatTrigger(alarm_id_t, void*);
 
+void pot_address_inc() {
+  pot_addr = (pot_addr + 1) % 8;
+  // if multiple boards, add that logic here
+}
+
+void pot_address_setup() {
+  gpio_init(POT_ADDR_0_PIN);
+  gpio_set_dir(POT_ADDR_0_PIN, GPIO_OUT);
+  gpio_init(POT_ADDR_1_PIN);
+  gpio_set_dir(POT_ADDR_1_PIN, GPIO_OUT);
+  gpio_init(POT_ADDR_2_PIN);
+  gpio_set_dir(POT_ADDR_2_PIN, GPIO_OUT);
+}
+
+void set_pot_address() {
+  gpio_put(POT_ADDR_0_PIN, pot_addr & 0x01);
+  gpio_put(POT_ADDR_1_PIN, pot_addr & 0x02);
+  gpio_put(POT_ADDR_2_PIN, pot_addr & 0x04);
+}
+
 int64_t beatAnticipate(alarm_id_t id, void* user_data) {
   gpio_put(LED_PIN, false);
   internalClockAlarmId = add_alarm_in_ms(tempoDelayMs, &beatTrigger, 0, true);
+  pot_address_inc();
+  set_pot_address();
   return 0;
 }
 
@@ -209,6 +246,9 @@ int main() {
   enableInput(MODE_BUTTON_PIN);
   enableInput(TRIG_PULSE_PIN);
   enableInput(MODE_PULSE_PIN);
+
+  // pot board addressing
+  pot_address_setup();
 
   // i2c setup for DAC
   i2c_init(I2C_PORT, IC2_HZ);
