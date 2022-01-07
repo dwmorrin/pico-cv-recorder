@@ -5,6 +5,44 @@
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
 
+#define SIZE_OF_ARRAY(x) (sizeof(x) / sizeof(x[0]))
+
+//**** QUANTIZE ****
+// TODO: move this to a separate file
+
+// this magic number depends on the DAC's voltage reference
+// this is for a 3.3V reference
+#define MAGIC_NUMBER_SEMITONE 103
+
+uint semitone_quantize(uint adc_value)
+{
+  // parentheses matter: we want integer division before multiplication
+  return MAGIC_NUMBER_SEMITONE * (adc_value / MAGIC_NUMBER_SEMITONE);
+}
+
+#define ADC_MAX_VALUE 4095
+#define NUMBER_OF_BUCKETS 12
+
+// divide up the range of the ADC into NUMBER_OF_BUCKETS buckets
+int adc_to_bucket(int adc_value)
+{
+  return adc_value / (ADC_MAX_VALUE / NUMBER_OF_BUCKETS);
+}
+
+int quantize_to_index_of_scale(int index, const int scale[], const int scale_size)
+{
+  int octave = index / scale_size;
+  int i = index % scale_size;
+  return octave * MAGIC_NUMBER_SEMITONE * 12 + scale[i] * MAGIC_NUMBER_SEMITONE;
+}
+
+#define quantize_scale(index, scale) quantize_to_index_of_scale(index, scale, SIZE_OF_ARRAY(scale))
+
+const int scale_major[] = {0, 2, 4, 5, 7, 9, 11};
+const int scale_pentatonic[] = {0, 2, 4, 7, 9};
+
+//**** END QUANTIZE ****
+
 /*
  **** HARDWARE NOTES ****
 
@@ -46,25 +84,34 @@
     Quantize function depends on DAC power supply
     High = quantize.
     GPIO 10 (pin 14)
-    
+  
+  Quantize range & scale:
+    Range: full range or bucketed
+      High = full range
+      GPIO 0 (pin 1)
+    Scale: select scale
+      High = pentatonic
+      GPIO 1 (pin 2)
 */
 enum GPIO_PINS // hardware pin #
 {
-  DAC_SDA_PIN = 4,      // 6
-  DAC_SCL_PIN = 5,      // 7
-  POT_ADDR_0_PIN = 6,   // 9
-  POT_ADDR_1_PIN = 7,   // 10
-  POT_ADDR_2_PIN = 8,   // 11
-  QUANTIZE_PIN = 10,    // 14
-  EXT_TRIG_EN_PIN = 11, // 15
-  TRIG_OUT_PIN = 15,    // 20
-  TRIG_BUTTON_PIN = 16, // 21
-  MODE_BUTTON_PIN = 17, // 22
-  TRIG_PULSE_PIN = 18,  // 24
-  MODE_PULSE_PIN = 19,  // 25
-  LED_PIN = 25,         // built-in LED
-  CV_IN_PIN = 26,       // 31
-  TEMPO_IN_PIN = 27,    // 32
+  QUANTIZE_RANGE_PIN = 0, // 1
+  QUANTIZE_SCALE_PIN = 1, // 2
+  DAC_SDA_PIN = 4,        // 6
+  DAC_SCL_PIN = 5,        // 7
+  POT_ADDR_0_PIN = 6,     // 9
+  POT_ADDR_1_PIN = 7,     // 10
+  POT_ADDR_2_PIN = 8,     // 11
+  QUANTIZE_PIN = 10,      // 14
+  EXT_TRIG_EN_PIN = 11,   // 15
+  TRIG_OUT_PIN = 15,      // 20
+  TRIG_BUTTON_PIN = 16,   // 21
+  MODE_BUTTON_PIN = 17,   // 22
+  TRIG_PULSE_PIN = 18,    // 24
+  MODE_PULSE_PIN = 19,    // 25
+  LED_PIN = 25,           // built-in LED
+  CV_IN_PIN = 26,         // 31
+  TEMPO_IN_PIN = 27,      // 32
 };
 
 // tempo constants
@@ -89,6 +136,8 @@ volatile uint tempoDelayMs = 500; // milliseconds; tempo pot updates
 volatile bool triggered = false;
 volatile bool modeToggled = false;
 volatile bool quantize = false;
+volatile bool quantize_full_range = false;
+volatile bool quantize_pentatonic = false;
 volatile bool externalTrigger = false;
 volatile bool recording = true;
 volatile alarm_id_t internalClockAlarmId = 0;
@@ -238,12 +287,6 @@ bool updateTempoDelay(repeating_timer_t *rt)
   return true;
 }
 
-uint semitone_quantize(uint adc_value)
-{
-  // parentheses matter: we want integer division before multiplication
-  return 103 * (adc_value / 103);
-}
-
 void onTrigger()
 {
   // write to memory if recording
@@ -256,7 +299,21 @@ void onTrigger()
     memory[memoryIndex] = adc_read();
   }
   // write to DAC
-  dac_write(quantize ? semitone_quantize(memory[memoryIndex]) : memory[memoryIndex]);
+  if (quantize)
+  {
+    if (quantize_full_range)
+      dac_write(semitone_quantize(memory[memoryIndex]));
+    else
+    {
+      int bucket = adc_to_bucket(memory[memoryIndex]);
+      int quantized_value;
+      if (quantize_pentatonic) quantized_value = quantize_scale(bucket, scale_pentatonic);
+      else quantized_value = quantize_scale(bucket, scale_major);
+      dac_write(quantized_value);
+    }
+  }
+  else
+    dac_write(memory[memoryIndex]);
   // trigger output
   gpio_put(TRIG_OUT_PIN, true);
   add_alarm_in_ms(10, &pinOff, (void *)TRIG_OUT_PIN, true);
@@ -285,6 +342,10 @@ int main()
   enableInput(MODE_PULSE_PIN);
   gpio_init(QUANTIZE_PIN);
   gpio_set_dir(QUANTIZE_PIN, GPIO_IN);
+  gpio_init(QUANTIZE_RANGE_PIN);
+  gpio_set_dir(QUANTIZE_RANGE_PIN, GPIO_IN);
+  gpio_init(QUANTIZE_SCALE_PIN);
+  gpio_set_dir(QUANTIZE_SCALE_PIN, GPIO_IN);
   gpio_init(EXT_TRIG_EN_PIN);
   gpio_set_dir(EXT_TRIG_EN_PIN, GPIO_IN);
 
@@ -325,6 +386,8 @@ int main()
       onRecPlayToggle();
     // check state of hardware latched switches
     quantize = gpio_get(QUANTIZE_PIN);
+    quantize_full_range = gpio_get(QUANTIZE_RANGE_PIN);
+    quantize_pentatonic = gpio_get(QUANTIZE_SCALE_PIN);
     bool extTrigEn = gpio_get(EXT_TRIG_EN_PIN);
     if (extTrigEn != externalTrigger)
     {
