@@ -141,25 +141,21 @@ volatile bool quantize_pentatonic = false;
 volatile bool externalTrigger = false;
 volatile bool recording = true;
 volatile alarm_id_t internalClockAlarmId = 0;
-volatile uint8_t pot_addr = 0;
 
 #define I2C_PORT i2c0
 #define DAC_ADDR 0x62
 
-static void dac_write(uint value)
+static void dac_write(uint16_t value)
 {
-    uint8_t data[] = {0x40, value / 16, (value % 16) << 4};
+    uint8_t data[] = {
+        0x40,
+        static_cast<uint8_t>(value / 16),
+        static_cast<uint8_t>((value % 16) << 4)};
     i2c_write_blocking(I2C_PORT, DAC_ADDR, data, 3, false);
 }
 
 void onTrigger();
 int64_t beatTrigger(alarm_id_t, void *);
-
-void pot_address_inc()
-{
-    pot_addr = (pot_addr + 1) % 8;
-    // if multiple boards, add that logic here
-}
 
 void pot_address_setup()
 {
@@ -173,9 +169,9 @@ void pot_address_setup()
 
 void set_pot_address()
 {
-    gpio_put(POT_ADDR_0_PIN, pot_addr & 0x01);
-    gpio_put(POT_ADDR_1_PIN, pot_addr & 0x02);
-    gpio_put(POT_ADDR_2_PIN, pot_addr & 0x04);
+    gpio_put(POT_ADDR_0_PIN, memoryIndex & 0x01);
+    gpio_put(POT_ADDR_1_PIN, memoryIndex & 0x02);
+    gpio_put(POT_ADDR_2_PIN, memoryIndex & 0x04);
 }
 
 int64_t beatAnticipate(alarm_id_t id, void *user_data)
@@ -287,16 +283,18 @@ bool updateTempoDelay(repeating_timer_t *rt)
     return true;
 }
 
-void onTrigger()
+// continuation of onTrigger after pot mux has had time to update
+int64_t postAddressUpdate(alarm_id_t id, void *user_data)
 {
+    adc_select_input(ADC_IN_CV);
+    uint16_t sample = adc_read();
     // write to memory if recording
     if (recording)
     {
         gpio_put(LED_PIN, true);
         if (externalTrigger)
             add_alarm_in_ms(20, &pinOff, (void *)LED_PIN, true);
-        adc_select_input(ADC_IN_CV);
-        memory[memoryIndex] = adc_read();
+        memory[memoryIndex] = sample;
     }
     // write to DAC
     if (quantize)
@@ -319,13 +317,17 @@ void onTrigger()
     // trigger output
     gpio_put(TRIG_OUT_PIN, true);
     add_alarm_in_ms(10, &pinOff, (void *)TRIG_OUT_PIN, true);
-    // advance memory
-    memoryIndex = (memoryIndex + 1) % MEMORY_LENGTH;
-    // advance pot address
-    pot_address_inc();
-    set_pot_address();
     // update state
     triggered = false;
+    if (++memoryIndex == MEMORY_LENGTH)
+        memoryIndex = 0;
+    return 0;
+}
+
+void onTrigger()
+{
+    set_pot_address();
+    add_alarm_in_us(1, &postAddressUpdate, 0, true);
 }
 
 void onRecPlayToggle()
