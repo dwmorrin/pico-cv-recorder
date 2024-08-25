@@ -11,8 +11,10 @@
 // TODO: move this to a separate file
 
 // this magic number depends on the DAC's voltage reference
-// this is for a 3.3V reference
-#define MAGIC_NUMBER_SEMITONE 103
+// and any analog processing after the DAC
+// this is for a 3.3V reference with a gain of 7/3.3 (about 2.12)
+// to expand the 0-3.3V range to a 0-7V range.
+#define MAGIC_NUMBER_SEMITONE 49
 
 uint semitone_quantize(uint adc_value)
 {
@@ -61,7 +63,7 @@ const int scale_pentatonic[] = {0, 2, 4, 7, 9};
   Mode input (high pulse):
     GPIO 19 (pin 25)
   Ext/Int trigger switch:
-    TBD
+    GPIO 11 (pin 15)
   Tempo control: (using internal timer for playback)
     Potentiometer:
       CCW   -> 3.3 V (pin 36) (slowest tempo)
@@ -104,11 +106,14 @@ enum GPIO_PINS // hardware pin #
     POT_ADDR_2_PIN = 8,     // 11
     QUANTIZE_PIN = 10,      // 14
     EXT_TRIG_EN_PIN = 11,   // 15
+    POT_INH_0 = 12,         // 16
+    POT_INH_1 = 13,         // 17
     TRIG_OUT_PIN = 15,      // 20
     TRIG_BUTTON_PIN = 16,   // 21
     MODE_BUTTON_PIN = 17,   // 22
     TRIG_PULSE_PIN = 18,    // 24
     MODE_PULSE_PIN = 19,    // 25
+    REC_LED_PIN = 20,       // 26
     LED_PIN = 25,           // built-in LED
     CV_IN_PIN = 26,         // 31
     TEMPO_IN_PIN = 27,      // 32
@@ -165,6 +170,12 @@ void pot_address_setup()
     gpio_set_dir(POT_ADDR_1_PIN, GPIO_OUT);
     gpio_init(POT_ADDR_2_PIN);
     gpio_set_dir(POT_ADDR_2_PIN, GPIO_OUT);
+    gpio_init(POT_INH_0);
+    gpio_set_dir(POT_INH_0, GPIO_OUT);
+    gpio_put(POT_INH_0, false);
+    gpio_init(POT_INH_1);
+    gpio_set_dir(POT_INH_1, GPIO_OUT);
+    gpio_put(POT_INH_1, true);
 }
 
 void set_pot_address()
@@ -172,6 +183,11 @@ void set_pot_address()
     gpio_put(POT_ADDR_0_PIN, memoryIndex & 0x01);
     gpio_put(POT_ADDR_1_PIN, memoryIndex & 0x02);
     gpio_put(POT_ADDR_2_PIN, memoryIndex & 0x04);
+    // values 0-7 we want to inhibit first column
+    // values 8-15 we want to inhibit second column
+    bool inhibit0 = memoryIndex & 0x08;
+    gpio_put(POT_INH_0, inhibit0);
+    gpio_put(POT_INH_1, !inhibit0);
 }
 
 int64_t beatAnticipate(alarm_id_t id, void *user_data)
@@ -273,7 +289,7 @@ void resetInternalClock()
 bool updateTempoDelay(repeating_timer_t *rt)
 {
     adc_select_input(ADC_IN_TEMPO);
-    uint16_t tempoRaw = adc_read(); // 0 to 4096
+    uint16_t tempoRaw = 4095 - adc_read(); // reversed to correct wiring error in pot!
     // divide desired tempo by two; two delays per beat
     uint newTempoDelayMs = ((SLOW_MS - FAST_MS) * tempoRaw / 4096 + FAST_MS) / 2;
     if (newTempoDelayMs > tempoDelayMs + 20 || newTempoDelayMs < tempoDelayMs - 20)
@@ -333,6 +349,7 @@ void onTrigger()
 void onRecPlayToggle()
 {
     recording = !recording;
+    gpio_put(REC_LED_PIN, recording);
     resetInternalClock();
     modeToggled = false;
 }
@@ -377,6 +394,10 @@ int main()
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
     resetInternalClock();
+
+    gpio_init(REC_LED_PIN);
+    gpio_set_dir(REC_LED_PIN, GPIO_OUT);
+    gpio_put(REC_LED_PIN, true);
 
     add_repeating_timer_ms(TEMPO_READ_DELAY, &updateTempoDelay, 0, &tempoTimer);
 
