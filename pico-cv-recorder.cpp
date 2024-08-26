@@ -359,7 +359,7 @@ int main()
     // register front panel controls with callbacks
     enableInput(TRIG_BUTTON_PIN);
     enableInput(MODE_BUTTON_PIN);
-    enableInput(TRIG_PULSE_PIN);
+    disableInput(TRIG_PULSE_PIN);
     enableInput(MODE_PULSE_PIN);
     gpio_init(QUANTIZE_PIN);
     gpio_set_dir(QUANTIZE_PIN, GPIO_IN);
@@ -417,6 +417,10 @@ int main()
         if (extTrigEn != externalTrigger)
         {
             externalTrigger = extTrigEn;
+            if (externalTrigger)
+                enableInput(TRIG_PULSE_PIN);
+            else
+                disableInput(TRIG_PULSE_PIN);
             resetInternalClock();
         }
     }
