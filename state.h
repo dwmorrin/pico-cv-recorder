@@ -1,25 +1,28 @@
 #pragma once
 #include "pico/stdlib.h"
-#include "quantizer.h" // Needed for the PotRange enum
+#include "quantizer.h"
 
 #define MEMORY_LENGTH 16
 
 struct SequencerState
 {
-  // Hardware interrupt flags (must be volatile)
+  // Hardware interrupt flags
   volatile bool trigger_pending = false;
   volatile bool mode_toggle_pending = false;
+  volatile bool scale_toggle_pending = false; // Triggered by long-press
   volatile bool range_toggle_pending = false;
+  volatile uint64_t mode_button_press_time = 0;
 
   // Application state
   uint tempo_delay_ms = 500;
   bool recording = true;
   bool external_trigger = false;
-  bool quantize_enabled = false;
-  bool quantize_full_range = false;
-  bool quantize_pentatonic = false;
+
+  // UI State
   bool pot_mode = false;
-  PotRange pot_range = RANGE_1_OCTAVE; // Default to 1 octave
+  int quantize_mode = 0; // 0=Unquantized, 1=Chromatic, 2=Scale
+  PotRange pot_range = RANGE_2_OCTAVES;
+  MusicalScale active_scale = SCALE_MAJOR;
 
   // Sequence memory
   uint16_t memory[MEMORY_LENGTH] = {0};

@@ -12,25 +12,28 @@ SequencerState state;
 
 enum GPIO_PINS
 {
-    QUANTIZE_RANGE_PIN = 0,
-    QUANTIZE_SCALE_PIN = 1,
-    POT_MODE_PIN = 2,
+    QUANT_UP_PIN = 0,   // SP3T
+    QUANT_DOWN_PIN = 1, // SP3T
+    POT_MODE_PIN = 2,   // DPDT POT/CV switch
     DAC_SDA_PIN = 4,
     DAC_SCL_PIN = 5,
     POT_ADDR_0_PIN = 6,
     POT_ADDR_1_PIN = 7,
     POT_ADDR_2_PIN = 8,
-    QUANTIZE_PIN = 10,
+    RANGE_DOWN_PIN = 10, // SP3T
     EXT_TRIG_EN_PIN = 11,
     POT_INH_0 = 12,
     POT_INH_1 = 13,
+    RANGE_UP_PIN = 14, // SP3T
     TRIG_OUT_PIN = 15,
-    TRIG_BUTTON_PIN = 16,
-    MODE_BUTTON_PIN = 17,
+    TRIG_BUTTON_PIN = 16, // Internal hidden button
+    MODE_BUTTON_PIN = 17, // REC/PLAY
     TRIG_PULSE_PIN = 18,
     MODE_PULSE_PIN = 19,
-    REC_LED_PIN = 20,
-    LED_PIN = 25,
+    LED_R_PIN = 20, // RGB LED
+    LED_G_PIN = 21, // RGB LED
+    LED_B_PIN = 22, // RGB LED
+    LED_PIN = 25,   // Built-in
     CV_IN_PIN = 26,
     TEMPO_IN_PIN = 27,
 };
@@ -87,6 +90,7 @@ void set_pot_address()
 // --- FORWARD DECLARATIONS ---
 void enableInput(uint pin);
 void disableInput(uint pin);
+void enableDualEdgeInput(uint pin);
 int64_t beatTrigger(alarm_id_t, void *);
 
 // --- ALARMS & TIMERS ---
@@ -106,7 +110,7 @@ int64_t beatAnticipate(alarm_id_t id, void *user_data)
 
 int64_t beatTrigger(alarm_id_t id, void *user_data)
 {
-    state.trigger_pending = true; // Flag for the main loop
+    state.trigger_pending = true;
     gpio_put(LED_PIN, true);
     if (!state.external_trigger)
         state.internal_clock_alarm = add_alarm_in_ms(state.tempo_delay_ms, &beatAnticipate, 0, true);
@@ -135,12 +139,33 @@ bool updateTempoDelay(repeating_timer_t *rt)
 }
 
 // --- INTERRUPTS ---
+
+// Helper function to keep onEdge clean
+void handleModeButtonEdge(uint32_t events)
+{
+    if (events & GPIO_IRQ_EDGE_RISE)
+    {
+        state.mode_button_press_time = time_us_64();
+    }
+    else if (events & GPIO_IRQ_EDGE_FALL)
+    {
+        uint64_t duration = time_us_64() - state.mode_button_press_time;
+        if (duration > 600000)
+        { // 600ms long press
+            state.scale_toggle_pending = true;
+        }
+        else if (duration > 20000)
+        { // 20ms debounce for short press
+            state.mode_toggle_pending = true;
+        }
+    }
+}
+
 void onPulse(uint gpio)
 {
     switch (gpio)
     {
     case TRIG_BUTTON_PIN:
-        // Hijack the button if we are in pot mode
         if (state.pot_mode)
         {
             state.range_toggle_pending = true;
@@ -153,10 +178,6 @@ void onPulse(uint gpio)
         break;
     case TRIG_PULSE_PIN:
         state.trigger_pending = true;
-        break;
-    case MODE_BUTTON_PIN:
-        state.mode_toggle_pending = true;
-        enableInput(gpio);
         break;
     case MODE_PULSE_PIN:
         state.mode_toggle_pending = true;
@@ -183,9 +204,11 @@ void onEdge(uint gpio, uint32_t events)
         onPulse(gpio);
         break;
     case TRIG_BUTTON_PIN:
-    case MODE_BUTTON_PIN:
         disableInput(gpio);
         add_alarm_in_ms(20, &checkTrigger, (void *)gpio, true);
+        break;
+    case MODE_BUTTON_PIN:
+        handleModeButtonEdge(events);
         break;
     }
 }
@@ -195,29 +218,34 @@ void enableInput(uint pin)
     gpio_set_irq_enabled_with_callback(pin, GPIO_IRQ_EDGE_RISE, true, &onEdge);
 }
 
+void enableDualEdgeInput(uint pin)
+{
+    gpio_set_irq_enabled_with_callback(pin, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &onEdge);
+}
+
 void disableInput(uint pin)
 {
-    gpio_set_irq_enabled(pin, GPIO_IRQ_EDGE_RISE, false);
+    gpio_set_irq_enabled(pin, 0, false); // Clear both edge flags
 }
 
 // --- MAIN EXECUTION LOGIC ---
 void processStep()
 {
-    // Set address and wait for CD4051 to settle
+    // 1. Set address and allow analog frontend to settle
     set_pot_address();
-    busy_wait_us(50);
+    busy_wait_us(50); // Increased RC settling time
 
-    // Read ADC
+    // 2. Read ADC
     adc_select_input(ADC_IN_CV);
     uint16_t sample = adc_read();
 
-    // Apply math if in Pot Mode
+    // 3. Apply math if in Pot Mode
     if (state.pot_mode)
     {
         sample = scale_pot_value(sample, state.pot_range);
     }
 
-    // Memory writing
+    // 4. Memory writing
     if (state.recording)
     {
         gpio_put(LED_PIN, true);
@@ -226,102 +254,152 @@ void processStep()
         state.memory[state.memory_index] = sample;
     }
 
-    // Output Quantization
+    // 5. Output Quantization Route
     uint16_t output_value = state.memory[state.memory_index];
-    if (state.quantize_enabled)
+
+    if (state.quantize_mode == 1)
     {
-        if (state.quantize_full_range)
-            output_value = semitone_quantize(output_value);
-        else
+        output_value = semitone_quantize(output_value);
+    }
+    else if (state.quantize_mode == 2)
+    {
+        switch (state.active_scale)
         {
-            output_value = state.quantize_pentatonic ? quantize_scale_pentatonic(output_value) : quantize_scale_major(output_value);
+        case SCALE_MAJOR:
+            output_value = quantize_scale_major(output_value);
+            break;
+        case SCALE_PENTATONIC:
+            output_value = quantize_scale_pentatonic(output_value);
+            break;
+        case SCALE_MINOR:
+            output_value = quantize_scale_minor(output_value);
+            break;
+        default:
+            break;
         }
     }
 
-    // I2C Write
+    // 6. I2C Write safely in main loop
     dac_write(output_value);
 
-    // Fire trigger output
+    // 7. Fire trigger output
     gpio_put(TRIG_OUT_PIN, true);
     add_alarm_in_ms(10, &pinOff, (void *)TRIG_OUT_PIN, true);
 
-    // Advance Sequence
+    // 8. Advance Sequence
     if (++state.memory_index == MEMORY_LENGTH)
         state.memory_index = 0;
 }
 
 int main()
 {
-    // Register front panel controls with callbacks
+    // Inputs
     enableInput(TRIG_BUTTON_PIN);
-    enableInput(MODE_BUTTON_PIN);
     disableInput(TRIG_PULSE_PIN);
     enableInput(MODE_PULSE_PIN);
+    enableDualEdgeInput(MODE_BUTTON_PIN); // Dual-edge for long press
 
-    gpio_init(QUANTIZE_PIN);
-    gpio_set_dir(QUANTIZE_PIN, GPIO_IN);
-    gpio_init(QUANTIZE_RANGE_PIN);
-    gpio_set_dir(QUANTIZE_RANGE_PIN, GPIO_IN);
-    gpio_init(QUANTIZE_SCALE_PIN);
-    gpio_set_dir(QUANTIZE_SCALE_PIN, GPIO_IN);
-    gpio_init(EXT_TRIG_EN_PIN);
-    gpio_set_dir(EXT_TRIG_EN_PIN, GPIO_IN);
+    // Setup toggle switch pins with pull-ups
+    gpio_init(QUANT_UP_PIN);
+    gpio_set_dir(QUANT_UP_PIN, GPIO_IN);
+    gpio_pull_up(QUANT_UP_PIN);
 
-    // Init new DPDT switch pin
+    gpio_init(QUANT_DOWN_PIN);
+    gpio_set_dir(QUANT_DOWN_PIN, GPIO_IN);
+    gpio_pull_up(QUANT_DOWN_PIN);
+
+    gpio_init(RANGE_UP_PIN);
+    gpio_set_dir(RANGE_UP_PIN, GPIO_IN);
+    gpio_pull_up(RANGE_UP_PIN);
+
+    gpio_init(RANGE_DOWN_PIN);
+    gpio_set_dir(RANGE_DOWN_PIN, GPIO_IN);
+    gpio_pull_up(RANGE_DOWN_PIN);
+
     gpio_init(POT_MODE_PIN);
     gpio_set_dir(POT_MODE_PIN, GPIO_IN);
     gpio_pull_up(POT_MODE_PIN);
 
-    // Pot board addressing
+    gpio_init(EXT_TRIG_EN_PIN);
+    gpio_set_dir(EXT_TRIG_EN_PIN, GPIO_IN);
+
+    // Setup Pot board addressing
     pot_address_setup();
 
-    // I2C setup for DAC
+    // Setup I2C for DAC
     i2c_init(I2C_PORT, 400e3);
     gpio_set_function(DAC_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(DAC_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(DAC_SDA_PIN);
     gpio_pull_up(DAC_SCL_PIN);
 
-    // ADC setup
+    // Setup ADC
     adc_init();
     adc_gpio_init(CV_IN_PIN);
     adc_gpio_init(TEMPO_IN_PIN);
 
-    // Trigger output
+    // Setup Outputs
     gpio_init(TRIG_OUT_PIN);
     gpio_set_dir(TRIG_OUT_PIN, GPIO_OUT);
     gpio_put(TRIG_OUT_PIN, false);
 
-    // LEDs
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
 
-    gpio_init(REC_LED_PIN);
-    gpio_set_dir(REC_LED_PIN, GPIO_OUT);
-    gpio_put(REC_LED_PIN, true);
+    // Setup RGB LED, active LOW
+    gpio_init(LED_R_PIN);
+    gpio_set_dir(LED_R_PIN, GPIO_OUT);
+    gpio_put(LED_R_PIN, true);
+    gpio_init(LED_G_PIN);
+    gpio_set_dir(LED_G_PIN, GPIO_OUT);
+    gpio_put(LED_G_PIN, true);
+    gpio_init(LED_B_PIN);
+    gpio_set_dir(LED_B_PIN, GPIO_OUT);
+    gpio_put(LED_B_PIN, true);
 
     resetInternalClock();
     add_repeating_timer_ms(TEMPO_READ_DELAY, &updateTempoDelay, 0, &tempoTimer);
 
     while (true)
     {
-        // Execute pending triggers
+        // 1. Execute pending triggers
         if (state.trigger_pending)
         {
             state.trigger_pending = false;
             processStep();
         }
 
-        // Handle Record/Play mode toggle
+        // 2. Handle Record/Play mode toggle (Short Press)
         if (state.mode_toggle_pending)
         {
             state.mode_toggle_pending = false;
             state.recording = !state.recording;
-            gpio_put(REC_LED_PIN, state.recording);
             resetInternalClock();
         }
 
-        // Handle hidden button range cycling (debug feature)
+        // 3. Handle Scale Cycling (Long Press)
+        if (state.scale_toggle_pending)
+        {
+            state.scale_toggle_pending = false;
+            int next_scale = (state.active_scale + 1) % SCALE_MAX;
+            state.active_scale = static_cast<MusicalScale>(next_scale);
+        }
+
+        // 4. Update RGB LED Status
+        if (state.recording)
+        {
+            gpio_put(LED_R_PIN, state.active_scale != SCALE_MAJOR);
+            gpio_put(LED_B_PIN, state.active_scale != SCALE_PENTATONIC);
+            gpio_put(LED_G_PIN, state.active_scale != SCALE_MINOR);
+        }
+        else
+        {
+            gpio_put(LED_R_PIN, true);
+            gpio_put(LED_G_PIN, true);
+            gpio_put(LED_B_PIN, true);
+        }
+
+        // 5. Handle hidden button range cycling (debug feature fallback)
         if (state.range_toggle_pending)
         {
             state.range_toggle_pending = false;
@@ -329,14 +407,32 @@ int main()
             state.pot_range = static_cast<PotRange>(next_range);
         }
 
-        // Continuously poll latched hardware switches
-        state.quantize_enabled = gpio_get(QUANTIZE_PIN);
-        state.quantize_full_range = gpio_get(QUANTIZE_RANGE_PIN);
-        state.quantize_pentatonic = gpio_get(QUANTIZE_SCALE_PIN);
+        // 6. Poll SP3T QUANT Switch
+        bool quant_up = !gpio_get(QUANT_UP_PIN);
+        bool quant_down = !gpio_get(QUANT_DOWN_PIN);
 
-        // Assume pulling the DPDT switch low means we are in Pot Mode
+        if (quant_up)
+            state.quantize_mode = 2; // Snap to Scale
+        else if (quant_down)
+            state.quantize_mode = 0; // Unquantized
+        else
+            state.quantize_mode = 1; // Chromatic
+
+        // 7. Poll SP3T RANGE Switch
+        bool range_up = !gpio_get(RANGE_UP_PIN);
+        bool range_down = !gpio_get(RANGE_DOWN_PIN);
+
+        if (range_up)
+            state.pot_range = RANGE_5_OCTAVES;
+        else if (range_down)
+            state.pot_range = RANGE_1_OCTAVE;
+        else
+            state.pot_range = RANGE_2_OCTAVES;
+
+        // 8. Poll DPDT Pot/CV Switch
         state.pot_mode = !gpio_get(POT_MODE_PIN);
 
+        // 9. Poll External Trigger Enable Switch
         bool extTrigEn = gpio_get(EXT_TRIG_EN_PIN);
         if (extTrigEn != state.external_trigger)
         {

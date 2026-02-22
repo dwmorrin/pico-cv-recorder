@@ -9,6 +9,14 @@
 
 #define SIZE_OF_ARRAY(x) (sizeof(x) / sizeof((x)[0]))
 
+enum MusicalScale
+{
+  SCALE_MAJOR,
+  SCALE_PENTATONIC,
+  SCALE_MINOR,
+  SCALE_MAX
+};
+
 enum PotRange
 {
   RANGE_1_OCTAVE,
@@ -21,6 +29,7 @@ enum PotRange
 uint16_t semitone_quantize(uint16_t adc_value);
 uint16_t quantize_scale_major(uint16_t adc_value);
 uint16_t quantize_scale_pentatonic(uint16_t adc_value);
+uint16_t quantize_scale_minor(uint16_t adc_value);
 
 // Pot scaling
 uint16_t scale_pot_value(uint16_t raw_adc, PotRange current_range);

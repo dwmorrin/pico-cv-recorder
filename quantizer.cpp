@@ -3,6 +3,7 @@
 // Lookup tables to snap any of the 12 chromatic semitones to the nearest valid scale degree
 const int snap_major[12] = {0, 0, 2, 2, 4, 5, 5, 7, 7, 9, 9, 11};
 const int snap_pentatonic[12] = {0, 0, 2, 2, 4, 4, 7, 7, 7, 9, 9, 0}; // 11 wraps to 0 (next octave)
+const int snap_minor[12] = {0, 0, 2, 3, 3, 5, 5, 7, 8, 8, 10, 10};
 
 // Helper: Converts a deviation in ADC steps to a continuous semitone count
 int32_t steps_to_semitones(int32_t steps)
@@ -64,6 +65,11 @@ uint16_t quantize_scale_major(uint16_t adc_value)
 uint16_t quantize_scale_pentatonic(uint16_t adc_value)
 {
   return snap_to_scale(adc_value, snap_pentatonic);
+}
+
+uint16_t quantize_scale_minor(uint16_t adc_value)
+{
+  return snap_to_scale(adc_value, snap_minor);
 }
 
 uint16_t scale_pot_value(uint16_t raw_adc, PotRange current_range)
