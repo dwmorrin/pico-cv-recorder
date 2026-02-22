@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <math.h>
 #include "pico/stdlib.h"
 #include "pico/time.h"
 #include "hardware/adc.h"
@@ -102,13 +103,33 @@ int64_t pinOff(alarm_id_t id, void *user_data)
 
 bool updateTempoDelay(repeating_timer_t *rt)
 {
+    // Static variable to remember the last physical position of the knob
+    static uint16_t last_tempo_raw = 0;
+
     adc_select_input(ADC_IN_TEMPO);
-    uint16_t tempoRaw = 4095 - adc_read();
-    uint newTempoDelayMs = ((SLOW_MS - FAST_MS) * tempoRaw / 4096 + FAST_MS);
-    if (newTempoDelayMs > state.tempo_delay_ms + 20 || newTempoDelayMs < state.tempo_delay_ms - 20)
+    // Read ADC so fully CW = max speed (4095)
+    uint16_t tempoRaw = adc_read();
+
+    // Apply hysteresis to the raw ADC reading (+/- 10 steps out of 4095)
+    // This ignores tiny electrical noise but instantly catches actual knob turns.
+    if (abs((int)tempoRaw - (int)last_tempo_raw) > 10)
     {
+        last_tempo_raw = tempoRaw;
+
+        // Normalize knob position from 0.0 to 1.0
+        float x = (float)tempoRaw / 4095.0f;
+
+        // Calculate exponential BPM: 20 * (4000/20)^x
+        // 200.0f is the ratio of Max BPM (4000) to Min BPM (20)
+        float bpm = 20.0f * powf(200.0f, x);
+
+        // Convert BPM to delay in milliseconds
+        uint newTempoDelayMs = (uint)(60000.0f / bpm);
+
+        // Update the global state
         state.tempo_delay_ms = newTempoDelayMs;
     }
+
     return true;
 }
 
