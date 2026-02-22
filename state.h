@@ -6,10 +6,10 @@
 
 struct SequencerState
 {
-  // Hardware interrupt flags
+  // Hardware interrupt flags & tracking
   volatile bool trigger_pending = false;
   volatile bool mode_toggle_pending = false;
-  volatile bool scale_toggle_pending = false; // Triggered by long-press
+  volatile bool scale_toggle_pending = false;
   volatile bool range_toggle_pending = false;
   volatile uint64_t mode_button_press_time = 0;
 
@@ -17,6 +17,7 @@ struct SequencerState
   uint tempo_delay_ms = 500;
   bool recording = true;
   bool external_trigger = false;
+  uint64_t last_beat_time = 0; // Replaces the hardware alarm tracking
 
   // UI State
   bool pot_mode = false;
@@ -27,9 +28,6 @@ struct SequencerState
   // Sequence memory
   uint16_t memory[MEMORY_LENGTH] = {0};
   int memory_index = 0;
-
-  // Timer tracking
-  alarm_id_t internal_clock_alarm = 0;
 };
 
 extern SequencerState state;
