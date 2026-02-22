@@ -1,47 +1,48 @@
-# Pico CV Recorder
+# Pico CV Recorder / 16 Step Sequencer
 
-Using the Raspberry Pi Pico microcontroller to record voltages and then replay those voltages,
-e.g. for use in a modular synthesizer.
+![Modular synth panel](./16_step_sequencer_panel.jpg)
 
-Outputs and inputs for CV/Gate style modular patching.
+Using the Raspberry Pi Pico microcontroller to record voltages and replay those voltages for use in a modular synthesizer. The module functions as both a continuous CV recorder and a 16-step analog potentiometer sequencer.
 
-Requires installing the
-[Raspberry Pi Pico C/C++ SDK](https://datasheets.raspberrypi.org/pico/raspberry-pi-pico-c-sdk.pdf).
+Outputs and inputs are scaled for CV/Gate style modular patching.
 
-# 16 Step Sequencer
-
-![control panel for a modular synthesizer](/16_step_sequencer_panel.jpg)
+Requires installing the [Raspberry Pi Pico C/C++ SDK](https://datasheets.raspberrypi.org/pico/raspberry-pi-pico-c-sdk.pdf).
 
 ## Hardware
 
 Todo: add schematics to this repo.
 
-## 16 step sequencer pots
+### 16-Step Sequencer Pots
 
-Default source for the ADC is a set of analog potentiometers that can be set between 0 V and 3.3 V.
+A secondary source for the ADC is a set of analog potentiometers operating between 0 V and 3.3 V. Potentiometer addressing is controlled by CD4051 multiplexer ICs. Each IC addresses 8 pots. By using the inhibit pin as a chip select pin, multiple sets of 8 pots can be addressed. The firmware currently polls 16 pots.
 
-Which pot is read is controlled by CD4051 mux ICs. Each IC can address 8 pots. By using the inhibit pin as a chip select pin, many sets of 8 pots can be addressed.
-The code is currently set up to read 16 pots.
+## Panel Connections
 
-## Panel connections
+### Signal Input/Output
 
-### Signal input/output
+Modular synth systems output bipolar voltages (typically +/-10 V to +/-15 V). The hardware front end shifts the system 0 V to 1.65 V and scales the input to fit the 0 to 3.3 V range of the Pico's ADC. The output stage performs the inverse function, shifting 1.65 V from the DAC back to 0 V and expanding the 0-3.3 V range to the modular system level.
 
-Modular synth systems can output voltages up +/-15 Vdc, so an appropriate front end has to map the system signal voltage range to the 3.3 V level of the ADC.
+To maintain 1V/Octave accuracy for the external CV input while providing usable sensitivity for the potentiometers, a DPDT switch isolates the input sources. When the potentiometers are selected, the firmware intercepts the ADC reading and applies independent bipolar software scaling. This limits the physical pots to a defined, playable voltage range centered at 0 V without altering the hardware op-amp path.
 
-One solution is to shift the system 0 V to 1.65 V and scale down the input to fit into 0 to 3.3 V. This can be accomplished with op amps.
+### Trigger Input/Output
 
-The output should perform the inverse function by shifting 1.65 V to 0 V and scaling up from 3.3 V to the system level.
+Trigger levels are shifted from the modular system level down to 3.3 V on the way in, and boosted from 3.3 V to the system level on the way out.
 
-When using the pots are a source, a separate output calibration may be desirable to control the sensitivity of the controls. Too sensitive means hard to tune for musical effect, especially if using it to control the frequency of an audio oscillator.
+## Controls and Interface
 
-### Trigger input/output
-
-Trigger levels must also be shifted from the system level down to 3.3 V on the way in, and boosted from 3.3 V to the system level on the way out.
-
-## Switches
-
-- quantize enable
-- semitone quantized
-- scale quantized (major, pentatonic, etc - define what you like in the code)
-- record/playback
+- **SRC (DPDT Switch):** Selects the active ADC source (External CV Input vs. Internal Sequencer Pots).
+- **QUANT (SP3T Switch):** Sets the output quantization mode.
+  - Up: Snap to musical scale
+  - Center: Chromatic (semitones)
+  - Down: Unquantized (raw CV)
+- **SCALE (SP3T Switch):** Sets the mathematical voltage scaling range for the potentiometers.
+  - Up: 5 Octaves
+  - Center: 2 Octaves
+  - Down: 1 Octave
+- **REC/PLAY (Push Button):** - Short press: Toggles between recording and playback states.
+  - Long press (>1 second): Cycles the active musical scale (Major -> Pentatonic -> Natural Minor).
+- **RGB LED Indicator:** Provides visual feedback for the active scale during recording mode.
+  - Red: Major
+  - Blue: Pentatonic
+  - Green: Natural Minor
+- **Tempo / Ext Clock (Push-Pull Pot):** The potentiometer controls the internal clock rate. The push-pull switch toggles the external trigger input (`TRIG IN`) to allow external hardware to drive the sequencer clock.
