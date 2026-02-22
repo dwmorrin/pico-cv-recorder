@@ -12,6 +12,8 @@ struct SequencerState
   volatile bool scale_toggle_pending = false;
   volatile bool range_toggle_pending = false;
   volatile uint64_t mode_button_press_time = 0;
+  volatile bool mode_button_is_held = false;
+  volatile bool mode_long_press_executed = false;
 
   // Application state
   uint tempo_delay_ms = 500;

@@ -118,15 +118,16 @@ void handleModeButtonEdge(uint32_t events)
     if (events & GPIO_IRQ_EDGE_RISE)
     {
         state.mode_button_press_time = time_us_64();
+        state.mode_button_is_held = true;
+        state.mode_long_press_executed = false;
     }
     else if (events & GPIO_IRQ_EDGE_FALL)
     {
+        state.mode_button_is_held = false;
         uint64_t duration = time_us_64() - state.mode_button_press_time;
-        if (duration > 600000)
-        {
-            state.scale_toggle_pending = true;
-        }
-        else if (duration > 20000)
+
+        // Only trigger a short press if we didn't already fire a long press
+        if (!state.mode_long_press_executed && duration > 50000)
         {
             state.mode_toggle_pending = true;
         }
@@ -322,7 +323,7 @@ int main()
 
     while (true)
     {
-        // 1. Clock Engine
+        // 1. Clock Engine (Timestamp based)
         if (!state.external_trigger)
         {
             uint64_t now = time_us_64();
@@ -340,14 +341,24 @@ int main()
             processStep();
         }
 
-        // 3. Handle Record/Play mode toggle
+        // 3. Poll for Long Press execution while the mode button is actively held
+        if (state.mode_button_is_held && !state.mode_long_press_executed)
+        {
+            if (time_us_64() - state.mode_button_press_time > 1000000ULL)
+            { // 500ms second threshold
+                state.scale_toggle_pending = true;
+                state.mode_long_press_executed = true; // Lockout until release
+            }
+        }
+
+        // 4. Handle Record/Play mode toggle (Short Press)
         if (state.mode_toggle_pending)
         {
             state.mode_toggle_pending = false;
             state.recording = !state.recording;
         }
 
-        // 4. Handle Scale Cycling
+        // 5. Handle Scale Cycling (Triggered by the long press polling above)
         if (state.scale_toggle_pending)
         {
             state.scale_toggle_pending = false;
@@ -355,7 +366,7 @@ int main()
             state.active_scale = static_cast<MusicalScale>(next_scale);
         }
 
-        // 5. Update RGB LED Status (Active LOW)
+        // 6. Update RGB LED Status (Active LOW)
         if (state.recording)
         {
             gpio_put(LED_R_PIN, state.active_scale != SCALE_MAJOR);
@@ -369,7 +380,7 @@ int main()
             gpio_put(LED_B_PIN, true);
         }
 
-        // 6. Handle hidden button fallback
+        // 7. Handle hidden button fallback
         if (state.range_toggle_pending)
         {
             state.range_toggle_pending = false;
@@ -377,7 +388,7 @@ int main()
             state.pot_range = static_cast<PotRange>(next_range);
         }
 
-        // 7. Poll SP3T Switches
+        // 8. Poll SP3T Switches
         bool quant_up = !gpio_get(QUANT_UP_PIN);
         bool quant_down = !gpio_get(QUANT_DOWN_PIN);
         if (quant_up)
@@ -398,7 +409,7 @@ int main()
 
         state.pot_mode = !gpio_get(POT_MODE_PIN);
 
-        // 8. Poll External Trigger Enable
+        // 9. Poll External Trigger Enable (with 50ms software debounce)
         static uint64_t last_ext_trig_toggle = 0;
         bool extTrigEn = gpio_get(EXT_TRIG_EN_PIN);
 
@@ -409,11 +420,13 @@ int main()
 
             if (state.external_trigger)
             {
-                enableInput(TRIG_PULSE_PIN);
+                // Make sure to re-enable with the correct mask!
+                gpio_set_irq_enabled(TRIG_PULSE_PIN, GPIO_IRQ_EDGE_RISE, true);
             }
             else
             {
-                disableInput(TRIG_PULSE_PIN);
+                // Fully disable the external interrupt
+                gpio_set_irq_enabled(TRIG_PULSE_PIN, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
                 state.last_beat_time = time_us_64(); // Prevent immediate firing on re-enable
             }
         }
